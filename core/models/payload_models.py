@@ -1,3 +1,5 @@
+import ast
+import hashlib
 from datetime import datetime
 from uuid import UUID
 from uuid import uuid4
@@ -9,8 +11,12 @@ from pydantic import Field
 from pydantic import model_validator
 
 from core import constants as cst
+
+from core.models.utility_models import DpoDatasetType
+from core.models.utility_models import TextDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
+from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import ImageTextPair
 from core.models.utility_models import JobStatus
@@ -252,18 +258,8 @@ class NewTaskRequestDPO(NewTaskRequest):
         return values
 
 
-class RewardFunctionReference(BaseModel):
-    """Model representing a reference to a reward function by ID"""
-
-    reward_id: str = Field(
-        ..., description="UUID of the reward function in the database", examples=["550e8400-e29b-41d4-a716-446655440000"]
-    )
-    reward_weight: float = Field(..., ge=0, description="Weight for this reward function")
-
-
 class NewTaskRequestGrpo(NewTaskRequest):
     field_prompt: str = Field(..., description="The column name for the prompt", examples=["prompt"])
-    extra_column: str | None = Field(None, description="The column name for the extra data", examples=["extra_data"])
 
     ds_repo: str = Field(..., description="The repository for the dataset", examples=["trl-lib/tldr"])
     file_format: FileFormat = Field(
@@ -271,7 +267,7 @@ class NewTaskRequestGrpo(NewTaskRequest):
     )
     model_repo: str = Field(..., description="The repository for the model", examples=["Qwen/Qwen2.5-Coder-32B-Instruct"])
 
-    reward_functions: list[RewardFunctionReference]
+    reward_functions: list[RewardFunction]
 
     # Turn off protected namespace for model
     model_config = ConfigDict(protected_namespaces=())
@@ -288,6 +284,44 @@ class NewTaskRequestGrpo(NewTaskRequest):
     def validate_reward_lists(self) -> "NewTaskRequestGrpo":
         if len(self.reward_functions) == 0:
             raise ValueError("reward_functions must not be empty")
+        return self
+
+    @model_validator(mode="after")
+    def validate_reward_functions(self) -> "NewTaskRequestGrpo":
+        for reward_function in self.reward_functions:
+            try:
+                # Check if it's valid Python code
+                parsed = ast.parse(reward_function.reward_func)
+
+                # Check if it contains a function definition
+                function_found = False
+                for node in ast.walk(parsed):
+                    if isinstance(node, ast.FunctionDef):
+                        function_found = True
+                        arg_names = [arg.arg for arg in node.args.args]
+                        has_completions = "completions" in arg_names
+                        has_kwargs = node.args.kwarg is not None
+
+                        if not has_completions:
+                            raise ValueError(f"Reward function {node.name} must have a 'completions' parameter")
+                        if not has_kwargs:
+                            raise ValueError(f"Reward function {node.name} must have a '**kwargs' parameter")
+
+                        if reward_function.is_generic is None:
+                            allowed_params = {"completions", "prompts"}
+                            reward_function.is_generic = set(arg_names) <= allowed_params
+
+                        if reward_function.func_hash is None:
+                            reward_function.func_hash = hashlib.sha256(reward_function.reward_func.encode()).hexdigest()
+
+                        break
+
+                if not function_found:
+                    raise ValueError("Each reward function must be a proper Python function")
+
+            except Exception as e:
+                raise ValueError(f"Invalid Python syntax: {reward_function.reward_func[:50]}... {e}")
+
         return self
 
 
@@ -312,8 +346,8 @@ class NewTaskWithFixedDatasetsRequest(NewTaskRequestInstructText):
         FileFormat.S3, description="The format of the dataset", examples=[FileFormat.HF, FileFormat.S3]
     )
     training_data: str = Field(..., description="The prepared training dataset")
+    synthetic_data: str = Field(..., description="The prepared synthetic dataset")
     test_data: str = Field(..., description="The prepared test dataset")
-    synthetic_data: str | None = Field(None, description="Kept for backwards compatibility, not used in business logic")
 
 
 class NewTaskWithCustomDatasetRequest(NewTaskRequestInstructText):
@@ -378,21 +412,6 @@ class InstructTextTaskDetails(TaskDetails):
     # Turn off protected namespace for model
     model_config = ConfigDict(protected_namespaces=())
 
-
-class ChatTaskDetails(TaskDetails):
-    task_type: TaskType = TaskType.CHATTASK
-    base_model_repository: str
-    ds_repo: str
-
-    chat_template: str = Field(..., description="The chat template used", examples=["chatml"])
-    chat_column: str | None = Field(None, description="The column name for the chat conversations", examples=["conversations"])
-    chat_role_field: str = Field(..., description="The column name to specify the role in the conversation ", examples=["from"])
-    chat_content_field: str = Field(..., description="The column name to specify the text content", examples=["value"])
-    chat_user_reference: str | None = Field(None, description="The column name to specify the user", examples=["user"])
-    chat_assistant_reference: str | None = Field(None, description="The column name to specify the assistant", examples=["assistant"])
-
-    # Turn off protected namespace for model
-    model_config = ConfigDict(protected_namespaces=())
 
 class DpoTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.DPOTASK
@@ -469,50 +488,5 @@ class TournamentGpuRequirementsResponse(BaseModel):
     total_hours: float
 
 
-class BenchmarkResult(BaseModel):
-    """Individual benchmark result for a participant"""
-
-    copy_task_id: str
-    participant_hotkey: str
-    tournament_id: str | None
-    quality_score: float
-    test_loss: float | None
-    synth_loss: float | None
-    repo: str | None
-    completed_at: datetime | None
-    created_at: datetime
-    model_id: str
-    dataset: str
-    task_type: str
-
-
-class BenchmarkRootTaskResults(BaseModel):
-    """Results for a specific benchmark root task"""
-
-    root_task_id: str
-    model_id: str
-    dataset: str
-    task_type: str
-    results: list[BenchmarkResult]
-
-
-class RewardFunctionInfo(BaseModel):
-    reward_id: str = Field(..., description="UUID of the reward function in the database")
-    name: str
-    description: str
-    code: str
-
-
-class RewardFunctionsResponse(BaseModel):
-    reward_functions: dict[str, RewardFunctionInfo]
-
-
-class AddRewardFunctionRequest(BaseModel):
-    name: str
-    description: str
-    code: str
-    reward_weight: float | None = None
-
-
 # Type alias for task details types
-AnyTypeTaskDetails = InstructTextTaskDetails | ChatTaskDetails| ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails
+AnyTypeTaskDetails = InstructTextTaskDetails | ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails

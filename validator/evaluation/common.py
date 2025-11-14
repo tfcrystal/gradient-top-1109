@@ -6,9 +6,7 @@ from math import ceil
 
 import psutil
 import torch
-import torch.nn.functional as F
 import yaml
-from accelerate.utils import find_executable_batch_size
 from axolotl.utils.dict import DictDefault
 from datasets import Dataset
 from peft import AutoPeftModelForCausalLM
@@ -82,63 +80,32 @@ def create_finetuned_cache_dir():
 
 
 @retry_on_5xx()
-def load_model(model_name_or_path: str, is_base_model: bool = False, local_files_only: bool = False) -> AutoModelForCausalLM:
+def load_model(model_name_or_path: str, is_base_model: bool = False) -> AutoModelForCausalLM:
     try:
-        # For local files, try to use the snapshot path directly
-        if local_files_only:
-            cache_dir = os.path.expanduser("~/.cache/huggingface")
-            cache_path = os.path.join(cache_dir, "hub", f"models--{model_name_or_path.replace('/', '--')}")
+        # Only use default cache for the base model
+        cache_dir = None if is_base_model else create_finetuned_cache_dir()
 
-            if os.path.exists(cache_path):
-                snapshots_dir = os.path.join(cache_path, "snapshots")
-                if os.path.exists(snapshots_dir):
-                    snapshots = sorted(os.listdir(snapshots_dir))  # Sort to get most recent
-
-                    for snapshot in snapshots:
-                        snapshot_path = os.path.join(snapshots_dir, snapshot)
-                        files = os.listdir(snapshot_path)
-
-                        has_model_files = any(f.endswith((".bin", ".safetensors")) for f in files)
-                        has_config = "config.json" in files
-
-                        if has_model_files and has_config:
-                            try:
-                                model = AutoModelForCausalLM.from_pretrained(
-                                    snapshot_path, device_map="auto", torch_dtype=torch.bfloat16, local_files_only=True
-                                )
-                                return model
-                            except Exception as e:
-                                logger.warning(f"Failed to load from snapshot {snapshot}: {e}")
-                                continue
-
-        # Fallback to standard loading
-        # Set cache_dir based on whether it's base model or finetuned
-        if local_files_only:
-            cache_dir = os.path.expanduser("~/.cache/huggingface")
-        elif not is_base_model:
-            cache_dir = create_finetuned_cache_dir()
-        else:
-            cache_dir = None
-
-        kwargs = {
-            "device_map": "auto",
-            "cache_dir": cache_dir,
-            "torch_dtype": torch.bfloat16,
-            "local_files_only": local_files_only,
-        }
-        if not local_files_only:
-            kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
-
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **kwargs)
-        return model
+        return AutoModelForCausalLM.from_pretrained(
+            model_name_or_path,
+            token=os.environ.get("HUGGINGFACE_TOKEN"),
+            device_map="auto",
+            cache_dir=cache_dir,
+            torch_dtype=torch.bfloat16,
+        )
     except RuntimeError as e:
         error_msg = str(e)
         if "size mismatch for" in error_msg and ("lm_head.weight" in error_msg or "model.embed_tokens.weight" in error_msg):
             pattern = re.search(r"shape torch\.Size\(\[(\d+), (\d+)\]\).*shape.*torch\.Size\(\[(\d+), \2\]\)", error_msg)
             if pattern and abs(int(pattern.group(1)) - int(pattern.group(3))) == 1:
                 logger.info("Detected vocabulary size off-by-one error, attempting to load with ignore_mismatched_sizes=True")
-                kwargs["ignore_mismatched_sizes"] = True
-                return AutoModelForCausalLM.from_pretrained(model_name_or_path, **kwargs)
+                return AutoModelForCausalLM.from_pretrained(
+                    model_name_or_path,
+                    token=os.environ.get("HUGGINGFACE_TOKEN"),
+                    ignore_mismatched_sizes=True,
+                    device_map="auto",
+                    cache_dir=cache_dir,
+                    torch_dtype=torch.bfloat16,
+                )
         logger.error(f"Exception type: {type(e)}, message: {str(e)}")
         raise
     except Exception as e:
@@ -147,107 +114,39 @@ def load_model(model_name_or_path: str, is_base_model: bool = False, local_files
 
 
 @retry_on_5xx()
-def load_tokenizer(original_model: str, local_files_only: bool = False) -> AutoTokenizer:
+def load_tokenizer(original_model: str) -> AutoTokenizer:
     try:
-        # For local files, try to use the snapshot path directly
-        if local_files_only:
-            cache_dir = os.path.expanduser("~/.cache/huggingface")
-            cache_path = os.path.join(cache_dir, "hub", f"models--{original_model.replace('/', '--')}")
-
-            if os.path.exists(cache_path):
-                snapshots_dir = os.path.join(cache_path, "snapshots")
-                if os.path.exists(snapshots_dir):
-                    snapshots = sorted(os.listdir(snapshots_dir))  # Sort to get most recent
-
-                    for snapshot in snapshots:
-                        snapshot_path = os.path.join(snapshots_dir, snapshot)
-                        files = os.listdir(snapshot_path)
-                        tokenizer_files = [f for f in files if "tokenizer" in f.lower() or f.endswith(".model")]
-
-                        if tokenizer_files:
-                            try:
-                                tokenizer = AutoTokenizer.from_pretrained(snapshot_path, local_files_only=True)
-                                return tokenizer
-                            except Exception as e:
-                                logger.warning(f"Failed to load from snapshot {snapshot}: {e}")
-                                continue
-
-        # Fallback to standard loading
-        kwargs = {
-            "local_files_only": local_files_only,
-            "cache_dir": os.path.expanduser("~/.cache/huggingface") if local_files_only else None,
-        }
-        if not local_files_only:
-            kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
-
-        tokenizer = AutoTokenizer.from_pretrained(original_model, **kwargs)
-        return tokenizer
+        return AutoTokenizer.from_pretrained(original_model, token=os.environ.get("HUGGINGFACE_TOKEN"))
     except Exception as e:
-        logger.error(f"Failed to load tokenizer: {str(e)}")
-        logger.debug("Full traceback:", exc_info=True)
+        logger.error(f"Exception type: {type(e)}, message: {str(e)}")
         raise  # Re-raise the exception to trigger retry
 
 
 @retry_on_5xx()
-def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftModelForCausalLM:
+def load_finetuned_model(repo: str) -> AutoPeftModelForCausalLM:
     try:
-        # For local files, try to use the snapshot path directly
-        if local_files_only:
-            cache_dir = os.path.expanduser("~/.cache/huggingface")
-            cache_path = os.path.join(cache_dir, "hub", f"models--{repo.replace('/', '--')}")
-
-            if os.path.exists(cache_path):
-                snapshots_dir = os.path.join(cache_path, "snapshots")
-                if os.path.exists(snapshots_dir):
-                    snapshots = sorted(os.listdir(snapshots_dir))  # Sort to get most recent
-
-                    for snapshot in snapshots:
-                        snapshot_path = os.path.join(snapshots_dir, snapshot)
-                        files = os.listdir(snapshot_path)
-
-                        has_adapter = any("adapter" in f.lower() for f in files)
-
-                        if has_adapter:
-                            try:
-                                model = AutoPeftModelForCausalLM.from_pretrained(
-                                    snapshot_path,
-                                    is_trainable=False,
-                                    device_map="auto",
-                                    torch_dtype=torch.bfloat16,
-                                    local_files_only=True,
-                                )
-                                return model
-                            except Exception as e:
-                                logger.warning(f"Failed to load from snapshot {snapshot}: {e}")
-                                continue
-
-        # Fallback to standard loading
-        # Set cache_dir based on local_files_only
-        if local_files_only:
-            cache_dir = os.path.expanduser("~/.cache/huggingface")
-        else:
-            cache_dir = create_finetuned_cache_dir()
-
-        kwargs = {
-            "is_trainable": False,
-            "device_map": "auto",
-            "cache_dir": cache_dir,
-            "torch_dtype": torch.bfloat16,
-            "local_files_only": local_files_only,
-        }
-        if not local_files_only:
-            kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
-
-        model = AutoPeftModelForCausalLM.from_pretrained(repo, **kwargs)
-        return model
+        cache_dir = create_finetuned_cache_dir()
+        return AutoPeftModelForCausalLM.from_pretrained(
+            repo,
+            is_trainable=False,
+            device_map="auto",
+            cache_dir=cache_dir,
+            torch_dtype=torch.bfloat16,
+        )
     except RuntimeError as e:
         error_msg = str(e)
         if "size mismatch for" in error_msg and ("lm_head.weight" in error_msg or "model.embed_tokens.weight" in error_msg):
             pattern = re.search(r"shape torch\.Size\(\[(\d+), (\d+)\]\).*shape.*torch\.Size\(\[(\d+), \2\]\)", error_msg)
             if pattern and abs(int(pattern.group(1)) - int(pattern.group(3))) == 1:
                 logger.info("Detected vocabulary size off-by-one error, attempting to load with ignore_mismatched_sizes=True")
-                kwargs["ignore_mismatched_sizes"] = True
-                return AutoPeftModelForCausalLM.from_pretrained(repo, **kwargs)
+                return AutoPeftModelForCausalLM.from_pretrained(
+                    repo,
+                    is_trainable=False,
+                    ignore_mismatched_sizes=True,
+                    device_map="auto",
+                    cache_dir=cache_dir,
+                    torch_dtype=torch.bfloat16,
+                )
 
         logger.error(f"Exception type: {type(e)}, message: {str(e)}")
         raise
@@ -368,94 +267,3 @@ def check_and_log_base_model_size(original_model: str) -> None:
         logger.info(f"Logged base model size: {results_dict['model_params_count']} parameters")
     else:
         logger.info(f"Base model size already logged: {results_dict['model_params_count']} parameters")
-
-
-def calculate_kl_divergence(
-    original_model: AutoModelForCausalLM,
-    finetuned_model: AutoModelForCausalLM,
-    dataset: Dataset,
-    tokenizer: AutoTokenizer,
-) -> float:
-    """
-    Calculate KL divergence between original and finetuned model outputs on a dataset.
-
-    Args:
-        original_model: The original/base model
-        finetuned_model: The finetuned model
-        dataset: Dataset to evaluate on
-        tokenizer: Tokenizer for text processing
-
-    Returns:
-        Average KL divergence across the dataset
-    """
-    logger.info("Starting KL divergence calculation...")
-
-    # Calculate max_length using same logic as GRPO evaluation
-    max_length = cst.GRPO_KL_SEQUENCE_LENGTH
-    max_embeddings = getattr(finetuned_model.config, "max_position_embeddings", None)
-    if max_embeddings and max_embeddings < 2 * max_length:
-        max_length = ceil(max_embeddings / 2)
-
-    original_model.eval()
-    finetuned_model.eval()
-
-    @find_executable_batch_size(starting_batch_size=cst.GRPO_KL_BATCH_SIZE)
-    def calculate_kl_with_batch_size(batch_size):
-        logger.info(f"Attempting KL divergence calculation with batch size: {batch_size}")
-
-        total_kl_div = 0.0
-        total_samples = 0
-
-        # Process dataset in batches
-        for i in range(0, len(dataset), batch_size):
-            batch = dataset[i : i + batch_size]
-            prompts = batch[cst.TRL_GRPO_FIELD_PROMPT]
-
-            try:
-                inputs = tokenizer(prompts, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-            except Exception as e:
-                logger.warning(f"Failed to tokenize batch starting at index {i}: {e}")
-                continue
-
-            with torch.no_grad():
-                try:
-                    # Get logits from both models
-                    original_outputs = original_model(**inputs)
-                    finetuned_outputs = finetuned_model(**inputs)
-
-                    original_logits = original_outputs.logits
-                    finetuned_logits = finetuned_outputs.logits
-
-                    # Convert logits to probabilities
-                    original_probs = F.softmax(original_logits, dim=-1)
-                    finetuned_log_probs = F.log_softmax(finetuned_logits, dim=-1)
-
-                    # Calculate KL divergence: KL(original || finetuned)
-                    kl_div = F.kl_div(finetuned_log_probs, original_probs, reduction="none")
-
-                    # Average over sequence length and vocabulary, sum over batch
-                    batch_kl = kl_div.sum(dim=-1).mean(dim=-1).sum().item()
-
-                    total_kl_div += batch_kl
-                    total_samples += len(prompts)
-
-                    if (i // batch_size) % 10 == 0:
-                        logger.info(f"Processed {i + len(prompts)} samples, current batch KL: {batch_kl / len(prompts):.6f}")
-
-                except Exception as e:
-                    logger.warning(f"Failed to compute KL divergence for batch starting at index {i}: {e}")
-                    continue
-                finally:
-                    torch.cuda.empty_cache()
-
-        if total_samples == 0:
-            logger.error("No samples were successfully processed for KL divergence calculation")
-            raise ValueError("No samples were successfully processed for KL divergence calculation")
-
-        avg_kl_div = total_kl_div / total_samples
-        logger.info(f"KL divergence calculation completed. Average KL divergence: {avg_kl_div:.6f} over {total_samples} samples")
-
-        return avg_kl_div
-
-    return calculate_kl_with_batch_size()

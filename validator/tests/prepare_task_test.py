@@ -1,7 +1,8 @@
 import asyncio
 
-from validator.core.config import load_config
+from core.models.utility_models import FileFormat
 from validator.core.models import ChatRawTask
+from validator.core.config import load_config
 from validator.tasks.task_prep import prepare_text_task
 from validator.utils.logging import get_logger
 
@@ -21,7 +22,7 @@ async def main():
         ds_repo="Magpie-Align/Magpie-Pro-300K-Filtered",
         file_format="hf",
         is_organic=True,
-        status="pending",
+        status='pending',
         model_id="Qwen/Qwen2.5-Coder-32B-Instruct",
         ds="Magpie-Align/Magpie-Pro-300K-Filtered",
         created_at="2023-10-01T00:00:00Z",
@@ -30,7 +31,9 @@ async def main():
     config = load_config()
 
     try:
-        test_data, synth_data, train_data = await prepare_text_task(task=task, keypair=config.keypair)
+        test_data, synth_data, train_data = await prepare_text_task(
+            task=task, keypair=config.keypair
+        )
 
         logger.info(f"Test data URL: {test_data}")
         logger.info(f"Synthetic data URL: {synth_data}")

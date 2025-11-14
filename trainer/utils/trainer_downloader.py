@@ -9,11 +9,11 @@ from huggingface_hub import hf_hub_download
 from huggingface_hub import snapshot_download
 from transformers import CLIPTokenizer
 
-import trainer.utils.training_paths as train_paths
 from core.models.utility_models import FileFormat
 from core.models.utility_models import TaskType
 from core.utils import download_s3_file
 from trainer import constants as cst
+import trainer.utils.training_paths as train_paths
 
 
 hf_api = HfApi()
@@ -83,6 +83,20 @@ def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> st
         raise e
 
 
+def download_flux_unet(repo_id: str, output_dir: str) -> str:
+    files_metadata = hf_api.list_repo_tree(repo_id=repo_id, repo_type="model")
+    file_path = None
+    for file in files_metadata:
+        if hasattr(file, "size") and file.size is not None:
+            if file.path.endswith(".safetensors") and file.size > 10 * 1024 * 1024 * 1024:
+                file_path = file.path
+                local_path = download_from_huggingface(repo_id, file_path, output_dir)
+    if not file_path:
+        raise FileNotFoundError(f"No valid file found in root of repo '{repo_id}'.")
+
+    return local_path
+
+
 async def download_base_model(repo_id: str, save_root: str) -> str:
     model_name = repo_id.replace("/", "--")
     save_path = os.path.join(save_root, model_name)
@@ -114,7 +128,7 @@ async def main():
     parser.add_argument(
         "--task-type",
         required=True,
-        choices=[TaskType.IMAGETASK.value, TaskType.INSTRUCTTEXTTASK.value, TaskType.DPOTASK.value, TaskType.GRPOTASK.value, TaskType.CHATTASK.value],
+        choices=[TaskType.IMAGETASK.value, TaskType.INSTRUCTTEXTTASK.value, TaskType.DPOTASK.value, TaskType.GRPOTASK.value],
     )
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--file-format")

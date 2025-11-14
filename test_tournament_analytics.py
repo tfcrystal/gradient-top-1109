@@ -1,25 +1,18 @@
 import asyncio
 import json
-from unittest.mock import AsyncMock
-from unittest.mock import patch
+import pytest
+from unittest.mock import AsyncMock, patch
+from datetime import datetime
 from uuid import uuid4
 
-import pytest
-
-from core.models.tournament_models import RoundStatus
-from core.models.tournament_models import RoundType
-from core.models.tournament_models import TournamentData
-from core.models.tournament_models import TournamentGroupData
-from core.models.tournament_models import TournamentPairData
-from core.models.tournament_models import TournamentParticipant
-from core.models.tournament_models import TournamentRoundData
-from core.models.tournament_models import TournamentScore
-from core.models.tournament_models import TournamentStatus
-from core.models.tournament_models import TournamentTask
-from core.models.tournament_models import TournamentType
-from core.models.tournament_models import TournamentTypeResult
+from core.models.tournament_models import (
+    TournamentData, TournamentType, TournamentStatus, TournamentParticipant,
+    TournamentRoundData, RoundType, RoundStatus, TournamentTask,
+    TournamentGroupData, TournamentPairData, TournamentScore, TournamentTypeResult
+)
 from core.models.utility_models import TaskType
-from validator.endpoints.tournament_analytics import get_tournament_details
+from validator.endpoints.tournament_analytics import get_tournament_details, get_latest_tournaments_details
+from validator.core.config import Config
 
 
 # Mock data

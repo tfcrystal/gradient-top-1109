@@ -12,6 +12,11 @@ from pydantic import field_validator
 from core.models.payload_models import TrainingRepoResponse
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
+from validator.core.constants import TOURNAMENT_DPO_GPU_MULTIPLIER
+from validator.core.constants import TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100
+from validator.core.constants import TOURNAMENT_GPU_THRESHOLD_FOR_4X_H100
+from validator.core.constants import TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100
+from validator.core.constants import TOURNAMENT_GRPO_GPU_MULTIPLIER
 from validator.core.models import AnyTypeRawTask
 
 
@@ -56,24 +61,41 @@ def generate_round_id(tournament_id: str, round_number: int) -> str:
     return f"{tournament_id}_round_{round_number:03d}"
 
 
+def generate_group_id(round_id: str, group_number: int) -> str:
+    return f"{round_id}_group_{group_number:03d}"
+
+
+def generate_pair_id(round_id: str, pair_number: int) -> str:
+    return f"{round_id}_pair_{pair_number:03d}"
+
+
+def get_tournament_gpu_requirement(task_type: TaskType, model_params_count: int) -> GpuRequirement:
+    if task_type == TaskType.IMAGETASK:
+        return GpuRequirement.A100
+
+    params_b = model_params_count / 1_000_000_000
+
+    if task_type == TaskType.DPOTASK:
+        params_b *= TOURNAMENT_DPO_GPU_MULTIPLIER
+    elif task_type == TaskType.GRPOTASK:
+        params_b *= TOURNAMENT_GRPO_GPU_MULTIPLIER
+
+    if params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100:
+        return GpuRequirement.H100_1X
+    elif params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_4X_H100:
+        return GpuRequirement.H100_2X
+    elif params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100:
+        return GpuRequirement.H100_4X
+    else:
+        return GpuRequirement.H100_8X
+
+
 class TournamentData(BaseModel):
     tournament_id: str
     tournament_type: TournamentType
     status: TournamentStatus = TournamentStatus.PENDING
-    base_winner_hotkey: str | None = Field(
-        default=None, description="The defending champion's real hotkey at the START of this tournament (snapshot)."
-    )
-    winner_hotkey: str | None = Field(
-        default=None,
-        description="The tournament winner's hotkey at the END of this tournament. "
-        "May be EMISSION_BURN_HOTKEY if the defending champion successfully defended.",
-    )
-    winning_performance_difference: float | None = Field(
-        default=None,
-        description="Performance difference metric (0.0 to 1.0) between champion and challenger in boss round. "
-        "Calculated as: (defending_champion_score - new_winner_score) / defending_champion_score. "
-        "score = loss, so lower is better. Higher diff = better perf = less burn.",
-    )
+    base_winner_hotkey: str | None = None
+    winner_hotkey: str | None = None
 
 
 class TournamentRoundData(BaseModel):
@@ -105,6 +127,7 @@ class TournamentParticipant(BaseModel):
     final_position: int | None = None
     training_repo: str | None = None
     training_commit_hash: str | None = None
+    stake_required: float | None = None
     backup_repo: str | None = None
 
 
@@ -148,19 +171,6 @@ class TournamentRound(BaseModel):
     is_final_round: bool = False
 
 
-class TaskTrainingAssignment(BaseModel):
-    """Data for assigning a task-hotkey pair for training with repo information."""
-
-    task_id: str
-    hotkey: str
-    created_at: datetime
-    priority: int = Field(
-        default=1, description="Training priority: 1=organic (non-tournament/non-benchmark), 2=tournament, 3=benchmark"
-    )
-    training_repo: str | None = None
-    training_commit_hash: str | None = None
-
-
 class TournamentTaskTraining(BaseModel):
     task: AnyTypeRawTask
     hotkey: str
@@ -168,8 +178,6 @@ class TournamentTaskTraining(BaseModel):
     n_training_attempts: int
     created_at: datetime
     updated_at: datetime
-    training_repo: str | None = None
-    training_commit_hash: str | None = None
 
 
 class TournamentTaskScore(BaseModel):
@@ -221,29 +229,6 @@ class TournamentTypeResult(BaseModel):
     prev_winner_won_final: bool
 
 
-class TaskPerformanceDifference(BaseModel):
-    """Performance difference data for a single task"""
-
-    task_id: str
-    task_type: str
-    boss_score: float | None
-    challenger_score: float | None
-    threshold_used: float  # 0.05, 0.075, or 0.10
-    performance_difference: float | None  # Percentage difference (positive = challenger better)
-    challenger_won: bool
-
-
-class TournamentPerformanceData(BaseModel):
-    """Performance data for tournament vs sync comparison"""
-
-    tournament_task_id: str
-    synthetic_task_id: str
-    task_type: str
-    tournament_winner_score: float
-    best_synthetic_score: float
-    performance_difference: float  # Percentage difference (positive = tournament better)
-
-
 class TournamentDetailsResponse(BaseModel):
     tournament_id: str
     tournament_type: TournamentType
@@ -255,18 +240,15 @@ class TournamentDetailsResponse(BaseModel):
     final_scores: list[TournamentScore]
     text_tournament_weight: float
     image_tournament_weight: float
-    boss_round_performance: list[TaskPerformanceDifference] | None = None
-    sync_performance: list[TournamentPerformanceData] | None = None
 
 
 class TournamentAuditData(BaseModel):
     text_tournament_data: TournamentResultsWithWinners | None = None
     image_tournament_data: TournamentResultsWithWinners | None = None
     participants: list[str] = []
-    text_tournament_weight: float = 0.0
-    image_tournament_weight: float = 0.0
+    tournament_weight_multiplier: float = 0.0
+    regular_weight_multiplier: float = 0.0
     burn_weight: float = 0.0
-    weekly_participation: list["HotkeyTaskParticipation"] = []
 
 
 class BossRoundTaskCompletion(BaseModel):
@@ -293,6 +275,8 @@ class RespondingNode(BaseModel):
 
     node: Node
     training_repo_response: TrainingRepoResponse
+    boosted_stake: float
+    actual_stake: float
 
 
 class NextTournamentInfo(BaseModel):
@@ -311,6 +295,7 @@ class NextTournamentDates(BaseModel):
 
 class ActiveTournamentParticipant(BaseModel):
     hotkey: str
+    stake_requirement: float
 
 
 class ActiveTournamentInfo(BaseModel):
@@ -324,117 +309,3 @@ class ActiveTournamentInfo(BaseModel):
 class ActiveTournamentsResponse(BaseModel):
     text: ActiveTournamentInfo | None
     image: ActiveTournamentInfo | None
-
-
-class TournamentBurnData(BaseModel):
-    """Separated burn data by tournament type"""
-
-    text_performance_diff: float | None
-    image_performance_diff: float | None
-    text_burn_proportion: float
-    image_burn_proportion: float
-    text_tournament_weight: float
-    image_tournament_weight: float
-    burn_weight: float
-
-
-class LatestTournamentsDetailsResponse(BaseModel):
-    """Response for latest tournaments with burn data"""
-
-    text: TournamentDetailsResponse | None
-    image: TournamentDetailsResponse | None
-    burn_data: TournamentBurnData
-
-
-class TournamentHistoryEntry(BaseModel):
-    """Individual tournament entry for history response"""
-
-    tournament_id: str
-    tournament_type: TournamentType
-    status: TournamentStatus
-    winner_hotkey: str | None = None
-    base_winner_hotkey: str | None = None
-    created_at: datetime | None = None
-
-
-class TournamentHistoryResponse(BaseModel):
-    """Response for tournament history endpoint"""
-
-    tournaments: list[TournamentHistoryEntry]
-
-
-class BenchmarkTaskCopy(BaseModel):
-    """Raw benchmark task copy data from database"""
-
-    copy_task_id: str
-    root_task_id: str
-    participant_hotkey: str
-    tournament_id: str | None = None
-    created_at: datetime
-    task_type: TaskType
-    model_id: str
-    dataset: str
-    hours_to_complete: int
-    model_params_count: int
-    is_organic: bool
-    task_created_at: datetime | None = None
-
-
-class BenchmarkInstance(BaseModel):
-    """A single benchmark instance (copy task) with its results"""
-
-    copy_task_id: str
-    participant_hotkey: str
-    tournament_id: str
-    created_at: datetime
-    test_loss: float | None = None
-
-
-class BenchmarkTimeline(BaseModel):
-    """Timeline of benchmark results for a single root task"""
-
-    root_task_id: str
-    task_type: TaskType
-    model_id: str
-    dataset: str
-    hours_to_complete: int
-    model_params_count: int
-    is_organic: bool
-    task_created_at: datetime | None = None
-    benchmarks: list[BenchmarkInstance] = Field(default_factory=list)
-
-
-class BenchmarkTimelineResponse(BaseModel):
-    """Response containing benchmark timelines for all tasks"""
-
-    timelines: list[BenchmarkTimeline]
-
-
-class HotkeyTournamentParticipation(BaseModel):
-    """Tournament participation data for a specific hotkey"""
-
-    hotkey: str
-    participated_in_text: bool  # participated in the most recent text tournament
-    participated_in_image: bool  # participated in the most recent image tournament
-    text_proportion: float  # 0.0, 0.6, or 1.0 based on participation
-    image_proportion: float  # 0.0, 0.4, or 1.0 based on participation
-
-
-class HotkeyTaskParticipation(BaseModel):
-    """Weekly task participation data for a specific hotkey"""
-
-    hotkey: str
-    text_task_proportion: float  # proportion of text tasks (0.0 to 1.0)
-    image_task_proportion: float  # proportion of image tasks (0.0 to 1.0)
-    total_tasks: int  # total number of tasks in the period
-
-
-class NodeWeightsResult(BaseModel):
-    """Result of node weight calculations"""
-
-    node_ids: list[int]
-    node_weights: list[float]
-
-    def to_tuple(self) -> tuple[list[int], list[float]]:
-        """Convert to tuple format for compatibility with existing code"""
-        return self.node_ids, self.node_weights

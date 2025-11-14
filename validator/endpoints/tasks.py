@@ -10,12 +10,10 @@ from fastapi import Response
 
 from core.models.payload_models import AllOfNodeResults
 from core.models.payload_models import AnyTypeTaskDetails
-from core.models.payload_models import BenchmarkResult
-from core.models.payload_models import BenchmarkRootTaskResults
 from core.models.payload_models import LeaderboardRow
-from core.models.payload_models import NewTaskRequestChat
 from core.models.payload_models import NewTaskRequestDPO
 from core.models.payload_models import NewTaskRequestGrpo
+from core.models.payload_models import NewTaskRequestChat
 from core.models.payload_models import NewTaskRequestImage
 from core.models.payload_models import NewTaskRequestInstructText
 from core.models.payload_models import NewTaskResponse
@@ -31,19 +29,16 @@ from validator.core.config import Config
 from validator.core.constants import MAX_CONCURRENT_JOBS
 from validator.core.dependencies import get_api_key
 from validator.core.dependencies import get_config
-from validator.core.models import ChatRawTask
-from validator.core.models import DetailedNetworkStats
 from validator.core.models import DpoRawTask
 from validator.core.models import GrpoRawTask
 from validator.core.models import ImageRawTask
+from validator.core.models import ChatRawTask
 from validator.core.models import InstructTextRawTask
 from validator.core.models import NetworkStats
-from validator.db.sql import grpo as grpo_sql
+from validator.core.models import DetailedNetworkStats
 from validator.db.sql import submissions_and_scoring as submissions_and_scoring_sql
 from validator.db.sql import tasks as task_sql
-from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.nodes import get_all_nodes
-from validator.tournament.utils import notify_organic_task_created
 from validator.utils.logging import get_logger
 from validator.utils.util import convert_task_to_task_details
 from validator.utils.util import hide_sensitive_data_till_finished
@@ -72,8 +67,6 @@ COMPLETED_ORGANIC_TASKS_ENDPOINT = "/v1/tasks/organic/completed"
 GET_NETWORK_DETAILED_STATUS = "/v1/network/detailed_status"
 UPDATE_TRAINING_REPO_BACKUP_ENDPOINT = "/v1/tasks/{task_id}/training_repo_backup"
 UPDATE_RESULT_MODEL_NAME_ENDPOINT = "/v1/tasks/{task_id}/result_model_name"
-CREATE_BENCHMARK_ROOT_TASK_ENDPOINT = "/v1/tasks/{task_id}/create_benchmark_root"
-GET_BENCHMARK_RESULTS_ENDPOINT = "/v1/benchmark/results"
 
 
 async def delete_task(
@@ -120,9 +113,6 @@ async def create_task_dpo(
     task = await task_sql.add_task(task, config.psql_db)
 
     logger.info(f"Task of type {task.task_type} created: {task.task_id}")
-    if config.discord_url:
-        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
-    
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 
@@ -133,22 +123,12 @@ async def create_task_grpo(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
-    reward_functions = []
-    for reward_function_reference in request.reward_functions:
-        reward_function = await grpo_sql.get_reward_function_by_id(config.psql_db, reward_function_reference.reward_id)
-        if reward_function is None:
-            raise HTTPException(status_code=400, detail=f"Reward function with ID {reward_function.reward_id} not found")
-
-        reward_function.reward_weight = reward_function_reference.reward_weight
-        reward_functions.append(reward_function)
-
     task = GrpoRawTask(
         model_id=request.model_repo,
         ds=request.ds_repo,
         file_format=request.file_format,
         field_prompt=request.field_prompt,
-        extra_column=request.extra_column,
-        reward_functions=reward_functions,
+        reward_functions=request.reward_functions,
         is_organic=True,
         status=TaskStatus.PENDING,
         created_at=current_time,
@@ -162,10 +142,6 @@ async def create_task_grpo(
     task = await task_sql.add_task(task, config.psql_db)
 
     logger.info(f"Task of type {task.task_type} created: {task.task_id}")
-    
-    if config.discord_url:
-        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
-    
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 
@@ -199,10 +175,6 @@ async def create_task_chat(
     task = await task_sql.add_task(task, config.psql_db)
 
     logger.info(f"Task of type {task.task_type} created: {task.task_id}")
-    
-    if config.discord_url:
-        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
-    
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 
@@ -252,6 +224,7 @@ async def create_task_instruct_text(
             training_repo_backup=result_repo,
             test_data=existing_task.test_data,
             training_data=existing_task.training_data,
+            synthetic_data=existing_task.synthetic_data,
             task_type=TaskType.INSTRUCTTEXTTASK,
             result_model_name=existing_task.result_model_name,
             file_format=existing_task.file_format,
@@ -259,10 +232,6 @@ async def create_task_instruct_text(
         )
 
         new_task = await task_sql.add_task(new_task, config.psql_db)
-        
-        if config.discord_url:
-            await notify_organic_task_created(str(new_task.task_id), new_task.task_type.value, config.discord_url)
-        
         return NewTaskResponse(
             success=True, task_id=new_task.task_id, created_at=new_task.created_at, account_id=new_task.account_id
         )
@@ -299,10 +268,6 @@ async def create_task_instruct_text(
     task = await task_sql.add_task(task, config.psql_db)
 
     logger.info(f"Task of type {task.task_type} created: {task.task_id}")
-    
-    if config.discord_url:
-        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
-    
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 
@@ -337,10 +302,6 @@ async def create_task_image(
     task = await task_sql.add_task(task, config.psql_db)
 
     logger.info(f"Task of type {task.task_type} created: {task.task_id}")
-
-    if config.discord_url:
-        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
-    
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 
@@ -407,14 +368,11 @@ async def create_task_with_fixed_datasets(
     # NOTE: feels weird to add the task and then update it immediately
     await task_sql.add_task(task, config.psql_db)
     task.training_data = request.training_data
+    task.synthetic_data = request.synthetic_data
     task.test_data = request.test_data
     await task_sql.update_task(task, config.psql_db)
 
     logger.info(task.task_id)
-    
-    if config.discord_url:
-        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
-    
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 
@@ -455,15 +413,7 @@ async def get_task_details(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    tournament_id = await tournament_sql.get_tournament_id_by_task_id(str(task_id), config.psql_db)
-    tournament_status = None
-
-    if tournament_id:
-        tournament = await tournament_sql.get_tournament(tournament_id, config.psql_db)
-        if tournament:
-            tournament_status = tournament.status
-
-    task = hide_sensitive_data_till_finished(task, tournament_status)
+    task = hide_sensitive_data_till_finished(task)
     return convert_task_to_task_details(task)
 
 
@@ -580,98 +530,13 @@ async def update_result_model_name(
     return Response(status_code=200)
 
 
-async def create_benchmark_root_task_from_existing(
-    task_id: UUID,
-    config: Config = Depends(get_config),
-) -> NewTaskResponse:
-    try:
-        original_task = await task_sql.get_task(task_id, config.psql_db)
-
-        if not original_task:
-            raise HTTPException(status_code=404, detail="Task not found.")
-
-        copied_task = await task_sql.copy_task_for_benchmark(original_task, config.psql_db)
-
-        await tournament_sql.add_benchmark_root_task(
-            task_id=str(copied_task.task_id), task_type=copied_task.task_type, psql_db=config.psql_db
-        )
-
-        logger.info(f"Created benchmark root task {copied_task.task_id} from original task {task_id}")
-        
-        if config.discord_url:
-            await notify_organic_task_created(str(copied_task.task_id), copied_task.task_type.value, config.discord_url, is_benchmark=True)
-
-        return NewTaskResponse(
-            success=True, task_id=copied_task.task_id, created_at=copied_task.created_at, account_id=copied_task.account_id
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating benchmark root task from {task_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to create benchmark root task: {str(e)}")
-
-
-async def get_benchmark_results(
-    config: Config = Depends(get_config),
-) -> list[BenchmarkRootTaskResults]:
-    """
-    Get all benchmark results across all root tasks.
-
-    Returns:
-        All benchmark results grouped by root task
-    """
-    try:
-        results_by_root = await tournament_sql.get_all_benchmark_results(config.psql_db)
-
-        benchmark_results = []
-        for root_task_id, results in results_by_root.items():
-            root_task = await task_sql.get_task(UUID(root_task_id), config.psql_db)
-            if not root_task:
-                logger.warning(f"Root task {root_task_id} not found, skipping")
-                continue
-
-            benchmark_results.append(
-                BenchmarkRootTaskResults(
-                    root_task_id=root_task_id,
-                    model_id=root_task.model_id,
-                    dataset=root_task.ds,
-                    task_type=root_task.task_type.value,
-                    results=[
-                        BenchmarkResult(
-                            copy_task_id=result["copy_task_id"],
-                            participant_hotkey=result["participant_hotkey"],
-                            tournament_id=result["tournament_id"],
-                            quality_score=result["quality_score"],
-                            test_loss=result["test_loss"],
-                            synth_loss=result["synth_loss"],
-                            repo=result["repo"],
-                            completed_at=result["completed_at"],
-                            created_at=result["created_at"],
-                            model_id=result["model_id"],
-                            dataset=result["dataset"],
-                            task_type=result["task_type"],
-                        )
-                        for result in results
-                    ],
-                )
-            )
-
-        logger.info(f"Retrieved benchmark results for {len(benchmark_results)} root tasks")
-        return benchmark_results
-
-    except Exception as e:
-        logger.error(f"Error retrieving benchmark results: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve benchmark results: {str(e)}")
-
-
 def factory_router() -> APIRouter:
     router = APIRouter(tags=["Gradients On Demand"], dependencies=[Depends(get_api_key)])
     router.add_api_route(TASKS_CREATE_ENDPOINT_INSTRUCT_TEXT, create_task_instruct_text, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_IMAGE, create_task_image, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_DPO, create_task_dpo, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_CHAT, create_task_chat, methods=["POST"])
-    router.add_api_route(TASKS_CREATE_ENDPOINT_GRPO, create_task_grpo, methods=["POST"])
+    # router.add_api_route(TASKS_CREATE_ENDPOINT_GRPO, create_task_grpo, methods=["POST"])
     router.add_api_route(TASKS_CREATE_WITH_FIXED_DATASETS_ENDPOINT, create_task_with_fixed_datasets, methods=["POST"])
     router.add_api_route(CREATE_TEXT_TASK_WITH_CUSTOM_DATASET_ENDPOINT, create_text_task_with_custom_dataset, methods=["POST"])
     router.add_api_route(GET_TASK_DETAILS_ENDPOINT, get_task_details, methods=["GET"])
@@ -685,6 +550,4 @@ def factory_router() -> APIRouter:
     router.add_api_route(COMPLETED_ORGANIC_TASKS_ENDPOINT, get_completed_organic_tasks, methods=["GET"])
     router.add_api_route(UPDATE_TRAINING_REPO_BACKUP_ENDPOINT, update_training_repo_backup, methods=["PUT"])
     router.add_api_route(UPDATE_RESULT_MODEL_NAME_ENDPOINT, update_result_model_name, methods=["PUT"])
-    router.add_api_route(CREATE_BENCHMARK_ROOT_TASK_ENDPOINT, create_benchmark_root_task_from_existing, methods=["POST"])
-    router.add_api_route(GET_BENCHMARK_RESULTS_ENDPOINT, get_benchmark_results, methods=["GET"])
     return router

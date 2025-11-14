@@ -7,10 +7,11 @@ import argparse
 import asyncio
 import json
 import os
-import pathlib
 import shutil
 import subprocess
 import sys
+import uuid
+import pathlib
 
 import yaml
 from transformers import AutoTokenizer
@@ -20,8 +21,6 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.append(project_root)
 
-from miner.logic.job_handler import create_reward_funcs_file
-
 import trainer.constants as train_cst
 import trainer.utils.training_paths as train_paths
 from core.config.config_handler import create_dataset_entry
@@ -29,15 +28,15 @@ from core.config.config_handler import save_config
 from core.config.config_handler import update_flash_attention
 from core.dataset_utils import adapt_columns_for_dpo_dataset
 from core.dataset_utils import adapt_columns_for_grpo_dataset
-from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
+from miner.logic.job_handler import create_reward_funcs_file
 
 
-def patch_wandb_symlinks(base_dir: str):
+def patch_wandb_symlinks(base_dir:str):
     for root, _, files in os.walk(base_dir):
         for name in files:
             full_path = os.path.join(root, name)
@@ -61,6 +60,48 @@ def patch_wandb_symlinks(base_dir: str):
                 else:
                     print("Target not found, creating dummy")
                     pathlib.Path(full_path).touch()
+
+
+def patch_model_metadata(output_dir: str, base_model_id: str):
+    try:
+        adapter_config_path = os.path.join(output_dir, "adapter_config.json")
+
+        if os.path.exists(adapter_config_path):
+            with open(adapter_config_path, "r") as f:
+                config = json.load(f)
+
+            config["base_model_name_or_path"] = base_model_id
+
+            with open(adapter_config_path, "w") as f:
+                json.dump(config, f, indent=2)
+
+            print(f"Updated adapter_config.json with base_model: {base_model_id}", flush=True)
+        else:
+            print(" adapter_config.json not found", flush=True)
+
+        readme_path = os.path.join(output_dir, "README.md")
+
+        if os.path.exists(readme_path):
+            with open(readme_path, "r") as f:
+                lines = f.readlines()
+
+            new_lines = []
+            for line in lines:
+                if line.strip().startswith("base_model:"):
+                    new_lines.append(f"base_model: {base_model_id}\n")
+                else:
+                    new_lines.append(line)
+
+            with open(readme_path, "w") as f:
+                f.writelines(new_lines)
+
+            print(f"Updated README.md with base_model: {base_model_id}", flush=True)
+        else:
+            print("README.md not found", flush=True)
+
+    except Exception as e:
+        print(f"Error updating metadata: {e}", flush=True)
+        pass
 
 
 def copy_dataset_to_axolotl_directories(dataset_path):
@@ -137,11 +178,21 @@ def run_training(config_path):
     training_env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
     training_env["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
-    training_command = ["accelerate", "launch", "-m", "axolotl.cli.train", config_path]
+    training_command = [
+    "accelerate", "launch",
+    "-m", "axolotl.cli.train",
+    config_path
+    ]
 
     try:
         print("Starting training subprocess...\n", flush=True)
-        process = subprocess.Popen(training_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        process = subprocess.Popen(
+            training_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
 
         for line in process.stdout:
             print(line, end="", flush=True)
@@ -159,6 +210,7 @@ def run_training(config_path):
         raise RuntimeError(f"Training subprocess failed with exit code {e.returncode}")
 
 
+
 async def main():
     print("---STARTING TEXT TRAINING SCRIPT---", flush=True)
     parser = argparse.ArgumentParser(description="Text Model Training Script")
@@ -166,9 +218,7 @@ async def main():
     parser.add_argument("--model", required=True, help="Model name or path")
     parser.add_argument("--dataset", required=True, help="Dataset path or HF dataset name")
     parser.add_argument("--dataset-type", required=True, help="JSON string of dataset type config")
-    parser.add_argument(
-        "--task-type", required=True, choices=["InstructTextTask", "DpoTask", "GrpoTask", "ChatTask"], help="Type of task"
-    )
+    parser.add_argument("--task-type", required=True, choices=["InstructTextTask", "DpoTask", "GrpoTask"], help="Type of task")
     parser.add_argument("--file-format", required=True, choices=["csv", "json", "hf", "s3"], help="File format")
     parser.add_argument("--expected-repo-name", help="Expected repository name")
     parser.add_argument("--hours-to-complete", type=float, required=True, help="Number of hours to complete the task")
@@ -183,8 +233,6 @@ async def main():
             dataset_type = DpoDatasetType(**dataset_type_dict)
         elif args.task_type == TaskType.INSTRUCTTEXTTASK.value:
             dataset_type = InstructTextDatasetType(**dataset_type_dict)
-        elif args.task_type == TaskType.CHATTASK.value:
-            dataset_type = ChatTemplateDatasetType(**dataset_type_dict)
         elif args.task_type == TaskType.GRPOTASK.value:
             dataset_type = GrpoDatasetType(**dataset_type_dict)
         else:
@@ -212,10 +260,12 @@ async def main():
         args.file_format,
         output_dir,
         args.expected_repo_name,
-        log_wandb=True,
+        log_wandb=True
     )
 
     run_training(config_path)
+
+    patch_model_metadata(output_dir, args.model)
 
     patch_wandb_symlinks(train_cst.WANDB_LOGS_DIR)
 

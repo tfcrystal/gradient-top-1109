@@ -1,4 +1,5 @@
 import json
+import math
 
 from asyncpg import Connection
 from fastapi import Depends
@@ -12,22 +13,32 @@ from validator.core.config import Config
 from validator.core.dependencies import get_config
 from validator.core.models import AnyTypeTask
 from validator.core.models import AnyTypeTaskWithHotkeyDetails
-from validator.core.models import ChatTask
-from validator.core.models import ChatTaskWithHotkeyDetails
 from validator.core.models import DpoTask
 from validator.core.models import DpoTaskWithHotkeyDetails
 from validator.core.models import GrpoTask
+from validator.core.models import ChatTask
 from validator.core.models import GrpoTaskWithHotkeyDetails
 from validator.core.models import HotkeyDetails
 from validator.core.models import ImageTask
 from validator.core.models import ImageTaskWithHotkeyDetails
+from validator.core.models import ChatTaskWithHotkeyDetails
 from validator.core.models import InstructTextTask
 from validator.core.models import InstructTextTaskWithHotkeyDetails
 from validator.db import constants as cst
 from validator.db.sql import tasks as tasks_sql
-from validator.db.sql import tournaments as tournament_sql
 from validator.utils.util import hide_sensitive_data_till_finished
-from validator.utils.util import normalise_float
+
+
+def normalise_float(float: float | None) -> float | None:
+    if float is None:
+        return 0.0
+
+    if math.isnan(float):
+        return None
+
+    if math.isinf(float):
+        float = 1e100 if float > 0 else -1e100
+    return float
 
 
 async def get_recent_tasks(
@@ -43,16 +54,6 @@ async def get_recent_tasks(
     tournament_tasks_clause_hotkeys = (
         "" if include_tournament_tasks else f"AND {cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})"
     )
-
-    # Always exclude benchmark tasks from auditing
-    benchmark_tasks_clause = f"""
-        AND {cst.TASK_ID} NOT IN (
-            SELECT {cst.TASK_ID} FROM {cst.BENCHMARK_ROOT_TASKS_TABLE}
-            UNION
-            SELECT {cst.COPY_TASK_ID} FROM {cst.BENCHMARK_TASK_COPIES_TABLE}
-        )
-    """
-
     async with await config.psql_db.connection() as connection:
         connection: Connection
         base_query = f"""
@@ -63,7 +64,6 @@ async def get_recent_tasks(
                 FROM {cst.SUBMISSIONS_TABLE} s
                 WHERE s.{cst.HOTKEY} = ANY($1)
                 {tournament_tasks_clause_hotkeys}
-                {benchmark_tasks_clause}
                 ORDER BY s.{cst.CREATED_ON} DESC
                 LIMIT $2 OFFSET $3
                 '''
@@ -72,7 +72,6 @@ async def get_recent_tasks(
                 SELECT {cst.TASK_ID}
                 FROM {cst.TASKS_TABLE}
                 {tournament_tasks_clause}
-                {benchmark_tasks_clause}
                 ORDER BY {cst.CREATED_AT} DESC
                 LIMIT $1 OFFSET $2
                 '''
@@ -112,6 +111,7 @@ async def get_recent_tasks(
             itt.field_output,
             itt.format as itt_format,
             itt.no_input_format,
+            itt.synthetic_data as itt_synthetic_data,
             itt.file_format as itt_file_format,
             it.model_type,
             ip.image_text_pairs,
@@ -121,8 +121,10 @@ async def get_recent_tasks(
             dt.prompt_format,
             dt.chosen_format,
             dt.rejected_format,
+            dt.synthetic_data as dpo_synthetic_data,
             dt.file_format as dpo_file_format,
             gt.field_prompt as grpo_field_prompt,
+            gt.synthetic_data as grpo_synthetic_data,
             gt.file_format as grpo_file_format,
             rf.reward_functions,
             ct.chat_template,
@@ -131,6 +133,7 @@ async def get_recent_tasks(
             ct.chat_content_field,
             ct.chat_user_reference,
             ct.chat_assistant_reference,
+            ct.synthetic_data as chat_synthetic_data,
             ct.file_format as chat_file_format
         FROM task_ids 
         JOIN {cst.TASKS_TABLE} t ON t.{cst.TASK_ID} = task_ids.{cst.TASK_ID}
@@ -156,6 +159,7 @@ async def get_recent_tasks(
             if task_type == TaskType.INSTRUCTTEXTTASK.value:
                 task_data["field_system"] = task_data.pop("itt_field_system")
                 task_data["format"] = task_data.pop("itt_format")
+                task_data["synthetic_data"] = task_data.pop("itt_synthetic_data")
                 task_data["file_format"] = task_data.pop("itt_file_format")
                 task = InstructTextTask(**{k: v for k, v in task_data.items() if k in InstructTextTask.model_fields})
             elif task_type == TaskType.IMAGETASK.value:
@@ -179,10 +183,12 @@ async def get_recent_tasks(
                 )
             elif task_type == TaskType.DPOTASK.value:
                 task_data["field_prompt"] = task_data.pop("dpo_field_prompt")
+                task_data["synthetic_data"] = task_data.pop("dpo_synthetic_data")
                 task_data["file_format"] = task_data.pop("dpo_file_format")
                 task = DpoTask(**{k: v for k, v in task_data.items() if k in DpoTask.model_fields})
             elif task_type == TaskType.GRPOTASK.value:
                 task_data["field_prompt"] = task_data.pop("grpo_field_prompt")
+                task_data["synthetic_data"] = task_data.pop("grpo_synthetic_data")
                 task_data["file_format"] = task_data.pop("grpo_file_format")
 
                 reward_functions = []
@@ -197,12 +203,13 @@ async def get_recent_tasks(
 
                 task = GrpoTask(**{k: v for k, v in task_data.items() if k in GrpoTask.model_fields})
             elif task_type == TaskType.CHATTASK.value:
-                task_data["file_format"] = task_data.pop("chat_file_format")
+                task_data['synthetic_data'] = task_data.pop('chat_synthetic_data')
+                task_data['file_format'] = task_data.pop('chat_file_format')
                 task = ChatTask(**{k: v for k, v in task_data.items() if k in ChatTask.model_fields})
             else:
                 logger.warning(f"Unknown task type: {task_type}, skipping task {task_data.get('task_id')}")
                 continue
-
+            
             task = hide_sensitive_data_till_finished(task)
             tasks_processed.append(task)
 
@@ -218,16 +225,6 @@ async def _process_task_batch(
     tournament_tasks_clause = (
         "" if include_tournament_tasks else f"AND {cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})"
     )
-
-    # Always exclude benchmark tasks from auditing
-    benchmark_tasks_clause = f"""
-        AND {cst.TASK_ID} NOT IN (
-            SELECT {cst.TASK_ID} FROM {cst.BENCHMARK_ROOT_TASKS_TABLE}
-            UNION
-            SELECT {cst.COPY_TASK_ID} FROM {cst.BENCHMARK_TASK_COPIES_TABLE}
-        )
-    """
-
     tasks_with_details = []
 
     tasks_by_id = {}
@@ -241,7 +238,6 @@ async def _process_task_batch(
             WHERE
                 t.{cst.TASK_ID} IN ({task_placeholders})
                 {tournament_tasks_clause}
-                {benchmark_tasks_clause}
         """
 
         tasks_rows = await connection.fetch(tasks_query, *task_ids)
@@ -473,16 +469,6 @@ async def get_recent_tasks_for_hotkey(
     tournament_tasks_clause = (
         "" if include_tournament_tasks else f"AND {cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})"
     )
-
-    # Always exclude benchmark tasks from auditing
-    benchmark_tasks_clause = f"""
-        AND {cst.TASK_ID} NOT IN (
-            SELECT {cst.TASK_ID} FROM {cst.BENCHMARK_ROOT_TASKS_TABLE}
-            UNION
-            SELECT {cst.COPY_TASK_ID} FROM {cst.BENCHMARK_TASK_COPIES_TABLE}
-        )
-    """
-
     async with await config.psql_db.connection() as connection:
         task_ids_query = f"""
             SELECT
@@ -492,7 +478,6 @@ async def get_recent_tasks_for_hotkey(
             WHERE
                 s.{cst.HOTKEY} = $1
                 {tournament_tasks_clause}
-                {benchmark_tasks_clause}
             ORDER BY
                 s.{cst.CREATED_ON} DESC
             LIMIT $2 OFFSET $3
@@ -524,16 +509,8 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
 
     logger.info("Got a task!!")
 
-    tournament_id = await tournament_sql.get_tournament_id_by_task_id(task_id, config.psql_db)
-    tournament_status = None
-
-    if tournament_id:
-        tournament = await tournament_sql.get_tournament(tournament_id, config.psql_db)
-        if tournament:
-            tournament_status = tournament.status
-
     # NOTE: If the task is not finished, remove details about synthetic data & test data?
-    task = hide_sensitive_data_till_finished(task_raw, tournament_status)
+    task = hide_sensitive_data_till_finished(task_raw)
 
     query = f"""
         SELECT

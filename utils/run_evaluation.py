@@ -12,14 +12,12 @@ from typing import Optional
 
 import httpx
 
-from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
 from core.utils import download_s3_file
-from validator.core.models import ChatTaskWithHotkeyDetails
 from validator.core.models import DpoTaskWithHotkeyDetails
 from validator.core.models import GrpoTaskWithHotkeyDetails
 from validator.core.models import ImageTaskWithHotkeyDetails
@@ -55,8 +53,6 @@ async def fetch_task_details(task_id: str):
 
         if task_type == TaskType.INSTRUCTTEXTTASK.value:
             return InstructTextTaskWithHotkeyDetails(**data)
-        elif task_type == TaskType.CHATTASK.value:
-            return ChatTaskWithHotkeyDetails(**data)
         elif task_type == TaskType.IMAGETASK.value:
             return ImageTaskWithHotkeyDetails(**data)
         elif task_type == TaskType.DPOTASK.value:
@@ -135,15 +131,6 @@ async def run_evaluation_from_task_id(
             format=task_details.format,
             no_input_format=task_details.no_input_format,
         )
-    elif task_type == TaskType.CHATTASK:
-        dataset_type = ChatTemplateDatasetType(
-            chat_template=task_details.chat_template,
-            chat_column=task_details.chat_column,
-            chat_role_field=task_details.chat_role_field,
-            chat_content_field=task_details.chat_content_field,
-            chat_user_reference=task_details.chat_user_reference,
-            chat_assistant_reference=task_details.chat_assistant_reference,
-        )
     elif task_type == TaskType.DPOTASK:
         dataset_type = DpoDatasetType(
             field_prompt=task_details.field_prompt,
@@ -159,10 +146,17 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    logger.info("Downloading test and synth data...")
+    logger.info("Downloading test data...")
     test_data_path = await download_s3_file(test_data_url)
-    synth_data_path = await download_s3_file(task_details.synthetic_data)
-    logger.info(f"Downloaded test and synth data to {test_data_path} and {synth_data_path}")
+    
+    synth_data_path = None
+    if task_details.synthetic_data:
+        logger.info("Downloading synthetic data...")
+        synth_data_path = await download_s3_file(task_details.synthetic_data)
+        logger.info(f"Downloaded test and synth data to {test_data_path} and {synth_data_path}")
+    else:
+        logger.warning("Synthetic data URL is missing in task details. Skipping synthetic data evaluation.")
+        logger.info(f"Downloaded test data to {test_data_path}")
 
     try:
         logger.info(f"Running test data evaluation for models: {models_to_evaluate}")
@@ -184,30 +178,34 @@ async def run_evaluation_from_task_id(
 
         logger.info(f"Test data evaluation results: {json.dumps(test_data_results_dict, indent=2)}")
 
-        logger.info(f"Running synthetic data evaluation for models: {models_to_evaluate}")
-        synth_data_results = await run_evaluation_docker_text(
-            dataset=synth_data_path,
-            models=models_to_evaluate,
-            original_model=original_model,
-            dataset_type=dataset_type,
-            file_format=FileFormat.JSON,
-            gpu_ids=gpu_ids,
-        )
+        if synth_data_path:
+            logger.info(f"Running synthetic data evaluation for models: {models_to_evaluate}")
+            synth_data_results = await run_evaluation_docker_text(
+                dataset=synth_data_path,
+                models=models_to_evaluate,
+                original_model=original_model,
+                dataset_type=dataset_type,
+                file_format=FileFormat.JSON,
+                gpu_ids=gpu_ids,
+            )
 
-        synth_data_results_dict = synth_data_results.model_dump()
-        if "results" in synth_data_results_dict:
-            for model, result in synth_data_results_dict["results"].items():
-                if isinstance(result, Exception):
-                    synth_data_results_dict["results"][model] = f"ERROR: {str(result)}"
-                    logger.error(f"Synthetic evaluation failed for model {model}: {result}")
+            synth_data_results_dict = synth_data_results.model_dump()
+            if "results" in synth_data_results_dict:
+                for model, result in synth_data_results_dict["results"].items():
+                    if isinstance(result, Exception):
+                        synth_data_results_dict["results"][model] = f"ERROR: {str(result)}"
+                        logger.error(f"Synthetic evaluation failed for model {model}: {result}")
 
-        logger.info(f"Synthetic data evaluation results: {json.dumps(synth_data_results_dict, indent=2)}")
+            logger.info(f"Synthetic data evaluation results: {json.dumps(synth_data_results_dict, indent=2)}")
+        else:
+            logger.info("Skipping synthetic data evaluation (no synthetic data available)")
 
     except Exception as e:
         logger.error(f"Text evaluation failed with error: {e}", exc_info=True)
     finally:
         os.remove(test_data_path)
-        os.remove(synth_data_path)
+        if synth_data_path:
+            os.remove(synth_data_path)
 
 
 if __name__ == "__main__":

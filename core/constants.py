@@ -16,6 +16,8 @@ except (TypeError, ValueError):
 
 IS_PROD_ENV = NETUID == DEFAULT_NETUID
 
+MINER_DOCKER_IMAGE = "weightswandering/tuning_miner:latest"
+MINER_DOCKER_IMAGE_DIFFUSION = "diagonalge/miner-diffusion-flux:latest"
 VALIDATOR_DOCKER_IMAGE = "weightswandering/tuning_vali:latest"
 VALIDATOR_DOCKER_IMAGE_DIFFUSION = "diagonalge/tuning_validator_diffusion:latest"
 
@@ -25,10 +27,10 @@ CONFIG_DIR = "core/config/"
 OUTPUT_DIR = "core/outputs/"
 CACHE_DIR = "~/.cache/huggingface"
 CACHE_DIR_HUB = os.path.expanduser("~/.cache/huggingface/hub")
-GRPO_MINER_OUTPUT_DIR = "/root/.cache/huggingface/hub/trained_repo"
 DIFFUSION_DATASET_DIR = "core/dataset/images"
+CONTAINER_FLUX_PATH = "/app/flux/unet"
 
-DIFFUSION_SDXL_REPEATS = 10
+DIFFUSION_SDXL_REPEATS = 5
 DIFFUSION_FLUX_REPEATS = 1
 DIFFUSION_DEFAULT_INSTANCE_PROMPT = "lora"
 DIFFUSION_DEFAULT_CLASS_PROMPT = "style"
@@ -49,10 +51,12 @@ HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 WANDB_TOKEN = os.getenv("WANDB_TOKEN")
 
 HUGGINGFACE_USERNAME = os.getenv("HUGGINGFACE_USERNAME")
-RAYONLABS_HF_USERNAME = "besimray"  # "rayonlabs"
+RAYONLABS_HF_USERNAME = "rayonlabs"
+
+CUSTOM_DATASET_TYPE = "custom"
 
 # DPO default dataset type
-DPO_DEFAULT_DATASET_TYPE = "chatml.default"
+DPO_DEFAULT_DATASET_TYPE = "chatml.default" 
 # Field names must match exactly what Axolotl's formatter expects
 DPO_DEFAULT_FIELD_PROMPT = "question"  # chatml.intel expects 'question'
 DPO_DEFAULT_FIELD_SYSTEM = "system"

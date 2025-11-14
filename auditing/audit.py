@@ -10,8 +10,11 @@ from core.models.tournament_models import TournamentAuditData
 from core.utils import download_s3_file
 from validator.core.config import Config
 from validator.core.config import load_config
-from validator.core.weight_setting import get_node_weights_from_tournament_audit_data
+from validator.core.models import TaskResults
+from validator.core.weight_setting import get_node_weights_from_period_scores_with_tournament_data
+from validator.core.weight_setting import get_period_scores_from_task_results
 from validator.core.weight_setting import set_weights
+from validator.evaluation.tournament_scoring import get_tournament_weights_from_data
 from validator.utils.logging import get_logger
 
 
@@ -22,7 +25,7 @@ def _normalised_vector_dot_product(a, b):
     return sum(a[i] * b[i] for i in range(len(a))) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
-async def _get_7_day_task_results_for_rayon_validator(config: Config) -> TournamentAuditData:
+async def _get_7_day_task_results_for_rayon_validator(config: Config) -> tuple[list[TaskResults], TournamentAuditData]:
     """Get task results and tournament data for a rayon validator."""
     url_to_get_latest_scores_url = "https://api.gradients.io/auditing/scores-url"
     response = await config.httpx_client.get(url_to_get_latest_scores_url)
@@ -38,25 +41,46 @@ async def _get_7_day_task_results_for_rayon_validator(config: Config) -> Tournam
     with open(result_filepath, "r") as f:
         upload_data = json.load(f)
 
-    tournament_audit_data = upload_data.get("tournament_audit_data")
-    return TournamentAuditData(**tournament_audit_data) if tournament_audit_data else TournamentAuditData()
+    if isinstance(upload_data, list):
+        logger.error("Old format - just task results. This should not happen.")
+    else:
+        logger.info("New format - with tournament data")
+        task_results_dicts = upload_data.get("task_results", [])
+        tournament_audit_data = upload_data.get("tournament_audit_data")
+
+    task_results = [TaskResults(**task_results_dict) for task_results_dict in task_results_dicts]
+    return task_results, TournamentAuditData(**tournament_audit_data) if tournament_audit_data else TournamentAuditData()
 
 
-async def get_task_results_from_s3(config: Config) -> TournamentAuditData:
-    tournament_audit_data = await _get_7_day_task_results_for_rayon_validator(config)
-    return tournament_audit_data
+async def get_task_results_from_s3(config: Config) -> tuple[list[TaskResults], TournamentAuditData]:
+    task_results, tournament_audit_data = await _get_7_day_task_results_for_rayon_validator(config)
+    return task_results, tournament_audit_data
 
 
 async def get_similarity_score_for_rayon_weights(
-    config: Config, tournament_audit_data: TournamentAuditData | None = None
+    config: Config, task_results: list[TaskResults], tournament_audit_data: TournamentAuditData | None = None
 ) -> float:
-    if not tournament_audit_data:
+    period_scores = get_period_scores_from_task_results(task_results)
+
+    if tournament_audit_data:
+        tournament_weights = get_tournament_weights_from_data(
+            tournament_audit_data.text_tournament_data,
+            tournament_audit_data.image_tournament_data,
+        )
+
+        node_ids, node_weights = await get_node_weights_from_period_scores_with_tournament_data(
+            config.substrate,
+            config.netuid,
+            period_scores,
+            tournament_weights,
+            tournament_audit_data.participants,
+            tournament_audit_data.tournament_weight_multiplier,
+            tournament_audit_data.regular_weight_multiplier,
+            tournament_audit_data.burn_weight,
+        )
+    else:
         logger.warning("No tournament data found in S3, cannot calculate weights without tournament information")
         raise ValueError("Tournament data is required for weight calculation")
-
-    result = await get_node_weights_from_tournament_audit_data(config.substrate, config.netuid, tournament_audit_data)
-    node_ids = result.node_ids
-    node_weights = result.node_weights
 
     node_ids_formatted, node_weights_formatted = _normalize_and_quantize_weights(node_ids, node_weights)
 
@@ -96,10 +120,10 @@ async def audit_weights(config: Config, set_weights_on_chain: bool = True) -> bo
     they have done to the tasks on the dashboards - it's only a minor improvement.
 
     """
-    tournament_audit_data = await get_task_results_from_s3(config)
+    task_results, tournament_audit_data = await get_task_results_from_s3(config)
 
     similarity_between_scores, node_ids_formatted, node_weights_formatted = await get_similarity_score_for_rayon_weights(
-        config, tournament_audit_data
+        config, task_results, tournament_audit_data
     )
 
     if similarity_between_scores > 0.98:

@@ -1,10 +1,9 @@
 import asyncio
 
-from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import FileFormat
+from core.models.utility_models import ChatTemplateDatasetType
 from validator.evaluation.docker_evaluation import run_evaluation_docker_text
 from validator.utils.logging import get_logger
-
 
 logger = get_logger(__name__)
 

@@ -1,8 +1,7 @@
-from datetime import datetime
-from uuid import UUID
-
 from pydantic import BaseModel
 from pydantic import Field
+from datetime import datetime
+from uuid import UUID
 
 from core.models.utility_models import TaskType
 

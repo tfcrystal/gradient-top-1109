@@ -20,67 +20,25 @@ logger = get_logger(__name__)
 hf_api = HfApi()
 
 
-def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalLM, local_files_only: bool = False) -> bool:
+def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalLM) -> bool:
     max_retries = 3
     base_delay = 2
 
-    # For local files, try to load config directly from snapshot
-    if local_files_only:
-        cache_dir = os.path.expanduser("~/.cache/huggingface")
-        cache_path = os.path.join(cache_dir, "hub", f"models--{original_repo.replace('/', '--')}")
+    for attempt in range(max_retries):
+        try:
+            original_config = AutoConfig.from_pretrained(original_repo, token=os.environ.get("HUGGINGFACE_TOKEN"))
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
 
-        if os.path.exists(cache_path):
-            snapshots_dir = os.path.join(cache_path, "snapshots")
-            if os.path.exists(snapshots_dir):
-                snapshots = sorted(os.listdir(snapshots_dir))
-
-                for snapshot in snapshots:
-                    snapshot_path = os.path.join(snapshots_dir, snapshot)
-                    if ".no_exist" in snapshot_path:
-                        continue
-                    config_path = os.path.join(snapshot_path, "config.json")
-
-                    if os.path.exists(config_path) and os.path.getsize(config_path) > 0:
-                        logger.info(f"Loading original model config from snapshot: {snapshot}")
-                        try:
-                            original_config = AutoConfig.from_pretrained(snapshot_path, local_files_only=True)
-                            logger.info("Successfully loaded config from snapshot")
-                            break
-                        except Exception as e:
-                            logger.warning(f"Failed to load config from snapshot {snapshot}: {e}")
-                            continue
-                else:
-                    logger.error(f"No valid config found in snapshots for {original_repo}")
-                    return False
+            error_msg = str(e).lower()
+            if any(pattern in error_msg for pattern in ["connection", "timeout", "5xx", "too many requests", "couldn't connect"]):
+                delay = base_delay * (2**attempt)
+                logger.info(f"HuggingFace connection issue (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                time.sleep(delay)
             else:
-                logger.error(f"No snapshots directory found for {original_repo}")
-                return False
-        else:
-            logger.error(f"No cache found for {original_repo}")
-            return False
-    else:
-        # Standard online loading with retries
-        for attempt in range(max_retries):
-            try:
-                kwargs = {"token": os.environ.get("HUGGINGFACE_TOKEN")}
-
-                original_config = AutoConfig.from_pretrained(original_repo, **kwargs)
-                break
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise e
-
-                error_msg = str(e).lower()
-                if any(
-                    pattern in error_msg for pattern in ["connection", "timeout", "5xx", "too many requests", "couldn't connect"]
-                ):
-                    delay = base_delay * (2**attempt)
-                    logger.info(
-                        f"HuggingFace connection issue (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s..."
-                    )
-                    time.sleep(delay)
-                else:
-                    raise e
+                raise e
     finetuned_config = finetuned_model.config
 
     try:
@@ -103,7 +61,7 @@ def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalL
     ]
     architecture_same = True
     for attr in attrs_to_compare:
-        if getattr(original_config, attr, None) is not None:
+        if hasattr(original_config, attr):
             if not hasattr(finetuned_config, attr):
                 architecture_same = False
                 break
@@ -116,33 +74,18 @@ def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalL
 
 
 @retry_on_5xx()
-def check_for_lora(model_id: str, local_files_only: bool = False) -> bool:
+def check_for_lora(model_id: str) -> bool:
     """
     Check if a Hugging Face model has LoRA adapters by looking for adapter_config.json.
 
     Args:
         model_id (str): The Hugging Face model ID (e.g., 'username/model-name') or path
-        local_files_only (bool): If True, only check local files without making API calls
 
     Returns:
         bool: True if it's a LoRA adapter, False otherwise
     """
-    LORA_CONFIG_FILE = "adapter_config.json"
     try:
-        if local_files_only:
-            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
-            repo_path = os.path.join(cache_dir, "models--" + model_id.replace("/", "--"))
-            if os.path.exists(repo_path):
-                for root, dirs, files in os.walk(repo_path):
-                    if ".no_exist" in root:
-                        continue
-                    if LORA_CONFIG_FILE in files:
-                        config_path = os.path.join(root, LORA_CONFIG_FILE)
-                        if os.path.getsize(config_path) > 0:
-                            return True
-            return False
-        else:
-            return LORA_CONFIG_FILE in hf_api.list_repo_files(model_id)
+        return "adapter_config.json" in hf_api.list_repo_files(model_id)
     except Exception as e:
         logger.error(f"Error checking for LoRA adapters: {e}")
         return False
@@ -215,6 +158,11 @@ def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> st
 
 def list_supported_images(dataset_path: str, extensions: tuple) -> list[str]:
     return [file_name for file_name in os.listdir(dataset_path) if file_name.lower().endswith(extensions)]
+
+
+def read_image_as_base64(image_path: str) -> str:
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
 
 
 def image_to_base64(image: Image.Image) -> str:

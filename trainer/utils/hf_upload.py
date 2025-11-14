@@ -1,55 +1,12 @@
-import glob
-import json
 import os
-import re
-import shutil
 import subprocess
-
+import re
+import glob
 import wandb
+import shutil
+
 from huggingface_hub import HfApi
 from huggingface_hub import login
-
-
-def patch_model_metadata(output_dir: str, base_model_id: str):
-    try:
-        adapter_config_path = os.path.join(output_dir, "adapter_config.json")
-
-        if os.path.exists(adapter_config_path):
-            with open(adapter_config_path, "r") as f:
-                config = json.load(f)
-
-            config["base_model_name_or_path"] = base_model_id
-
-            with open(adapter_config_path, "w") as f:
-                json.dump(config, f, indent=2)
-
-            print(f"Updated adapter_config.json with base_model: {base_model_id}", flush=True)
-        else:
-            print(" adapter_config.json not found", flush=True)
-
-        readme_path = os.path.join(output_dir, "README.md")
-
-        if os.path.exists(readme_path):
-            with open(readme_path, "r") as f:
-                lines = f.readlines()
-
-            new_lines = []
-            for line in lines:
-                if line.strip().startswith("base_model:"):
-                    new_lines.append(f"base_model: {base_model_id}\n")
-                else:
-                    new_lines.append(line)
-
-            with open(readme_path, "w") as f:
-                f.writelines(new_lines)
-
-            print(f"Updated README.md with base_model: {base_model_id}", flush=True)
-        else:
-            print("README.md not found", flush=True)
-
-    except Exception as e:
-        print(f"Error updating metadata: {e}", flush=True)
-        pass
 
             
 def sync_wandb_logs(cache_dir: str):
@@ -92,7 +49,6 @@ def main():
     task_id = os.getenv("TASK_ID")
     repo_name = os.getenv("EXPECTED_REPO_NAME")
     local_folder = os.getenv("LOCAL_FOLDER")
-    model = os.getenv("MODEL")
     repo_subfolder = os.getenv("HF_REPO_SUBFOLDER", None)
     wandb_logs_path = os.getenv("WANDB_LOGS_PATH", None)
 
@@ -108,8 +64,6 @@ def main():
 
     if not os.path.isdir(local_folder):
         raise FileNotFoundError(f"Local folder {local_folder} does not exist")
-
-    patch_model_metadata(local_folder, model)
 
     print(f"Creating repo {repo_id}...", flush=True)
     api = HfApi()
@@ -135,13 +89,6 @@ def main():
             sync_wandb_logs(cache_dir=wandb_logs_path)
         except Exception as e:
             print(f"Failed to sync W&B logs: {e}", flush=True)
-
-    try:
-        if os.path.isdir(local_folder):
-            shutil.rmtree(local_folder)
-            print(f"Deleted local folder: {local_folder}", flush=True)
-    except Exception as e:
-        print(f"Failed to delete local folder {local_folder}: {e}", flush=True)
 
 
 if __name__ == "__main__":

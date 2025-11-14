@@ -59,6 +59,9 @@ def generate_miner_config(dev: bool = False) -> dict[str, Any]:
     config = MinerConfig(
         wallet_name=input("\n💼 Enter wallet name (default: default): ") or "default",
         hotkey_name=input("🔑 Enter hotkey name (default: default): ") or "default",
+        wandb_token=input("📊 Enter wandb token (default: default): ") or "default",
+        huggingface_token=input("🤗 Enter huggingface token (default: default): ") or "default",
+        huggingface_username=input("🏗️ Enter your huggingface username where you would like to save the models: "),
         subtensor_network=subtensor_network,
         subtensor_address=subtensor_address,
         refresh_nodes=True,
@@ -127,7 +130,6 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     s3_compatible_secret_key = input("🎯 Enter s3 compatible secret key: ")
     s3_bucket_name = input("🎯 Enter your s3 bucket name: ")
     s3_region = input("🎯 Enter s3 region (default: us-east-1): ") or "us-east-1"
-    discord_url = input("🎯 Enter your discord webhook url (optional): ") or None
 
     frontend_api_key = generate_secure_password() if not frontend_api_key else frontend_api_key
 
@@ -160,7 +162,6 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         localhost=parse_bool_input("Use localhost?", default=True) if dev else False,
         database_url=database_url,
         postgres_profile=postgres_profile,
-        discord_webhook=discord_url,
     )
     return vars(config)
 

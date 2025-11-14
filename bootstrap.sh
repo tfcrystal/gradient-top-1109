@@ -139,10 +139,10 @@ fi
 VENV_PATH="$HOME/.venv"
 if [ ! -d "$VENV_PATH" ]; then
     python -m venv $VENV_PATH
-    echo ". $VENV_PATH/bin/activate" >> $HOME/.bashrc
+    echo "source $VENV_PATH/bin/activate" >> $HOME/.bashrc
     chown -R $SUDO_USER:$SUDO_USER $VENV_PATH $HOME/.bashrc
     echo_ "Python venv created"
-    . $VENV_PATH/bin/activate
+    source $VENV_PATH/bin/activate
 else
     echo_ "Python venv already exists at $VENV_PATH"
 fi
@@ -210,7 +210,7 @@ if [[ NO_LAUNCH -eq 1 ]]; then
   :
 else
   if [[ WITH_AUTOUPDATES -eq 1 ]]; then
-    . $HOME/.venv/bin/activate
+    source $HOME/.venv/bin/activate
   else
     docker compose --env-file .vali.env -f docker-compose.yml up -d --build
   fi
@@ -227,4 +227,4 @@ else
 fi
 
 echo_ "Please run the following command!!"
-echo_ ". ~/.bashrc"
+echo_ "source ~/.bashrc"

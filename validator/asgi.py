@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import uvicorn
@@ -17,13 +18,13 @@ from scalar_fastapi import get_scalar_api_reference
 
 from validator.core.config import load_config
 from validator.endpoints.auditing import factory_router as auditing_router
-from validator.endpoints.grpo import factory_router as grpo_router
 from validator.endpoints.health import factory_router as health_router
+from validator.endpoints.miner_details import factory_router as miner_details_router
 from validator.endpoints.tasks import factory_router as tasks_router
 from validator.endpoints.tournament_analytics import factory_router as tournament_analytics_router
 from validator.endpoints.tournament_orchestrator import factory_router as tournament_orchestrator_router
-from validator.endpoints.transfer_balances import factory_router as transfer_balances_router
 from validator.utils.logging import get_logger
+from validator.utils.miner_analytics import miner_performance_cache_worker
 
 
 logger = get_logger(__name__)
@@ -37,11 +38,14 @@ async def lifespan(app: FastAPI):
 
     app.state.config = config
 
+    cache_task = asyncio.create_task(miner_performance_cache_worker(config))
+
     logger.info("Starting up...")
 
     yield
 
     logger.info("Shutting down...")
+    cache_task.cancel()
     await config.psql_db.close()
     await config.redis_db.close()
 
@@ -59,10 +63,9 @@ def factory() -> FastAPI:
     app.include_router(health_router())
     app.include_router(tasks_router())
     app.include_router(auditing_router())
-    app.include_router(grpo_router())
+    app.include_router(miner_details_router())
     app.include_router(tournament_analytics_router())
     app.include_router(tournament_orchestrator_router())
-    app.include_router(transfer_balances_router())
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

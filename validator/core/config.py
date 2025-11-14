@@ -36,13 +36,8 @@ class Config:
     set_metagraph_weights_with_high_updated_to_not_dereg: bool
     github_token: str | None = None
     github_username: str | None = None
-    discord_url: str | None = None
     testnet: bool = os.getenv("SUBTENSOR_NETWORK", "").lower() == "test"
     debug: bool = os.getenv("ENV", "prod").lower() != "prod"
-    taostats_api_key: str | None = None
-    transfer_target_address: str | None = None
-    transfer_network: str | None = None
-    transfer_processing_interval_hours: int = 24
 
 
 _config = None
@@ -99,12 +94,6 @@ def load_config() -> Config:
 
         github_token = os.getenv("GITHUB_TOKEN")
         github_username = os.getenv("GITHUB_USERNAME")
-        discord_url = os.getenv("DISCORD_WEBHOOK", None)
-
-        taostats_api_key = os.getenv("TAOSTATS_API_KEY")
-        transfer_target_address = os.getenv("TRANSFER_TARGET_ADDRESS")
-        transfer_network = os.getenv("TRANSFER_NETWORK", "finney")
-        transfer_processing_interval_hours = int(os.getenv("TRANSFER_PROCESSING_INTERVAL_HOURS", "24"))
 
         _config = Config(
             substrate=substrate,
@@ -120,10 +109,5 @@ def load_config() -> Config:
             set_metagraph_weights_with_high_updated_to_not_dereg=set_metagraph_weights_with_high_updated_to_not_dereg,
             github_token=github_token,
             github_username=github_username,
-            discord_url=discord_url,
-            taostats_api_key=taostats_api_key,
-            transfer_target_address=transfer_target_address,
-            transfer_network=transfer_network,
-            transfer_processing_interval_hours=transfer_processing_interval_hours,
         )
     return _config

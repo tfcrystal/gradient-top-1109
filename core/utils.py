@@ -26,8 +26,26 @@ async def download_s3_file(file_url: str, save_path: str = None, tmp_dir: str = 
         >>> print(file_path)
         /data/file.txt
     """
+    # Ensure file_url is a string (not None, not bytes, not other types)
+    if file_url is None:
+        raise ValueError("file_url cannot be None")
+    if not isinstance(file_url, (str, bytes)):
+        file_url = str(file_url)
+    if isinstance(file_url, bytes):
+        file_url = file_url.decode('utf-8')
+    if not file_url:
+        raise ValueError("file_url cannot be empty")
+    
     parsed_url = urlparse(file_url)
     file_name = os.path.basename(parsed_url.path)
+    # Ensure all path components are strings (not bytes)
+    if isinstance(file_name, bytes):
+        file_name = file_name.decode('utf-8')
+    if isinstance(tmp_dir, bytes):
+        tmp_dir = tmp_dir.decode('utf-8')
+    if save_path and isinstance(save_path, bytes):
+        save_path = save_path.decode('utf-8')
+    
     if save_path:
         if os.path.isdir(save_path):
             local_file_path = os.path.join(save_path, file_name)
