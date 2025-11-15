@@ -26,7 +26,12 @@ tasks:
 
   miner:
     cmds:
-      - ENV=DEV uvicorn miner.server:app --reload --host 0.0.0.0 --port 56000 --env-file .1.env --log-level debug
+      - pm2 delete tfc-god-miner || true
+      - pm2 start bash --name tfc-god-miner -- -c 'ENV=DEV uvicorn miner.server:app --reload --host 0.0.0.0 --port 56000 --env-file .1.env --log-level debug'
+
+  close-miner:
+    cmds:
+      - pm2 delete tfc-god-miner || true
 
   trainer:
     cmds:

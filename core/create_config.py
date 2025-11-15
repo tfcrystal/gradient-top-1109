@@ -3,7 +3,13 @@ import os
 import random
 import secrets
 import string
+import sys
 from typing import Any
+
+# Add project root to Python path to allow imports from core module
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(script_dir)
+sys.path.insert(0, project_root)
 
 from core.models.config_models import AuditorConfig
 from core.models.config_models import MinerConfig
@@ -139,7 +145,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         subtensor_network=subtensor_network,
         subtensor_address=subtensor_address,
         netuid=netuid,
-        env=env,
+        env="dev" if dev else "prod",
         postgres_user=postgres_user,
         postgres_password=postgres_password,
         postgres_db=postgres_db,
@@ -170,7 +176,7 @@ def generate_config(dev: bool = False, miner: bool = False, trainer: bool = Fals
     if miner:
         return generate_miner_config(dev)
     elif trainer:
-        return generate_trainer_config
+        return generate_trainer_config()
     else:
         return generate_validator_config(dev)
 
