@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tarfile
 
 import docker
@@ -27,6 +28,20 @@ from validator.utils.logging import stream_container_logs
 
 
 logger = get_logger(__name__)
+
+
+def check_gpu_available() -> bool:
+    """Check if NVIDIA GPUs are available on the system."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            timeout=5,
+            check=False
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
 
 
 async def get_evaluation_results(container):
@@ -146,16 +161,33 @@ async def run_evaluation_docker_text(
         except Exception as e:
             logger.error(f"Cleanup failed: {str(e)}")
 
+    # Check if GPU is available and should be used
+    gpu_available = await asyncio.to_thread(check_gpu_available)
+    container_kwargs = {
+        "image": cst.VALIDATOR_DOCKER_IMAGE,
+        "command": command,
+        "environment": environment,
+        "volumes": volume_bindings,
+        "detach": True,
+    }
+    
+    if gpu_available and gpu_ids:
+        logger.info(f"Using GPU(s): {gpu_ids}")
+        container_kwargs["runtime"] = "nvidia"
+        container_kwargs["device_requests"] = [
+            docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])
+        ]
+    else:
+        if not gpu_available:
+            logger.warning("No NVIDIA GPUs detected. Running evaluation on CPU.")
+        elif not gpu_ids:
+            logger.warning("No GPU IDs provided. Running evaluation on CPU.")
+        # Don't set runtime or device_requests for CPU mode
+
     try:
         container: Container = await asyncio.to_thread(
             client.containers.run,
-            cst.VALIDATOR_DOCKER_IMAGE,
-            command=command,
-            environment=environment,
-            volumes=volume_bindings,
-            runtime="nvidia",
-            device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-            detach=True,
+            **container_kwargs
         )
         log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
         result = await asyncio.to_thread(container.wait)
@@ -232,15 +264,32 @@ async def run_evaluation_docker_image(
         except Exception as e:
             logger.error(f"Cleanup failed: {str(e)}")
 
+    # Check if GPU is available and should be used
+    gpu_available = await asyncio.to_thread(check_gpu_available)
+    container_kwargs = {
+        "image": cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+        "mounts": mounts,
+        "environment": environment,
+        "detach": True,
+    }
+    
+    if gpu_available and gpu_ids:
+        logger.info(f"Using GPU(s): {gpu_ids}")
+        container_kwargs["runtime"] = "nvidia"
+        container_kwargs["device_requests"] = [
+            docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])
+        ]
+    else:
+        if not gpu_available:
+            logger.warning("No NVIDIA GPUs detected. Running evaluation on CPU.")
+        elif not gpu_ids:
+            logger.warning("No GPU IDs provided. Running evaluation on CPU.")
+        # Don't set runtime or device_requests for CPU mode
+
     try:
         container = await asyncio.to_thread(
             client.containers.run,
-            cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
-            mounts=mounts,
-            environment=environment,
-            runtime="nvidia",
-            device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-            detach=True,
+            **container_kwargs
         )
         log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
         result = await asyncio.to_thread(container.wait)
